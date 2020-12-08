@@ -1,0 +1,274 @@
+---
+title: "No_show"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+
+df <- read.csv("KaggleV2-May-2016.csv", colClasses= c(rep("factor",3), rep("character",2), "numeric",  rep("factor",8)))
+
+```
+
+
+```{r data preparation}
+
+# Drop unnecessary variables
+sub_list = colnames(df)[!colnames(df) %in% c("PatientId", "AppointmentID", "Neighbourhood")]
+df <- subset(df, select = sub_list)
+
+# Calculate number of days between ScheduleDay and AppointmentDay
+df$ScheduledDay <- as.Date(substr(df$ScheduledDay, 1, 10))
+df$AppointmentDay <- as.Date(substr(df$AppointmentDay, 1, 10))
+
+df$daysInAdvance <- as.numeric(df$AppointmentDay - df$ScheduledDay)
+
+# Find the day of the week an appointment is due
+df$AppointmentWeekDay <- weekdays(df$AppointmentDay)
+df$AppointmentWeekDay <- as.factor(df$AppointmentWeekDay)
+df$AppointmentWeekDay <- factor(df$AppointmentWeekDay, levels = c("Monday", "Tuesday", "Wednesday", "Thursday",
+                                                                  "Friday", "Saturday"))
+
+# Drop no longer necessary variables
+sub_list = colnames(df)[!colnames(df) %in% c("ScheduledDay", "AppointmentDay")]
+df <- subset(df, select = sub_list)
+
+```
+
+
+```{r data exploration and cleaning}
+
+# check NA values
+sum(is.na(df))
+
+# It seems that we have negative value in column "Age" and "daysInAdvance"
+summary(df)
+
+# Frequency plots for categorical variables  
+all_cat_variables = colnames(df)[!colnames(df) %in% c("Age", "daysInAdvance")]
+
+for(variable in all_cat_variables){
+  options(scipen=999)
+  png(paste(variable, "_dist.png", sep=""), width = 1500, height = 900)
+  par(mar = c(8, 8, 8, 8))
+  barplot(table(df[,variable]), main=paste(variable,"frequency distribution", sep=" "), xlab="", ylab="", 
+          cex.lab=3.5, cex.main = 3.5, cex.axis=2.5, cex.names=2.5)
+  mtext(paste(variable), side=1, line=4, cex=3.5)
+  mtext("Frequency", side=2, line=4, cex=3)
+  dev.off()
+}
+
+# Frequency plots for predictive numeric variables 
+num_variables = colnames(df)[colnames(df) %in% c("Age", "daysInAdvance")]
+
+for(variable in num_variables){
+  options(scipen=999)
+  png(paste(variable, "_dist.png", sep=""), width = 1500, height = 900)
+  par(mar = c(8, 8, 8, 8))
+  hist(df[,variable], main=paste(variable,"frequency distribution", sep=" "), xlab="", ylab="", 
+       cex.lab=3.5, cex.main = 3.5, cex.axis=2.5, cex.names=2.5)
+  mtext(paste(variable), side=1, line=4, cex=3)
+  mtext("Frequency", side=2, line=4, cex=3.5)
+  dev.off()
+}
+
+# Check how many negative values there are for "Age" variable
+length(df$Age[df$Age < 0])
+length(df$daysInAdvance[df$daysInAdvance < 0])
+
+# Since there is only 1 negative value for "Age", we decide to simply remove the observation
+df <- df[df$Age >= 0,]
+
+# Since there is only 5 negative value for "daysInAdvance", we decide to simply remove the observations
+df <- df[df$daysInAdvance >= 0,]
+
+summary(df)
+
+```
+
+
+```{r data insigths, include=FALSE}
+
+# Relative frequency plots for categorical predictive variables  
+pred_cat_variables = colnames(df)[!colnames(df) %in% c("Age", "daysInAdvance", "No.show")]
+
+for(variable in pred_cat_variables){
+  cat_plt <- ggplot(df)+ 
+    geom_bar(aes_string(x=variable, fill="No.show"), position="fill")+
+    ggtitle(paste(variable,"relative frequency distribution", sep=" "))+
+    ylab("Relative frequency")
+  print(cat_plt)
+  ggsave(paste(variable, "_rel_dist.png", sep=""))
+}
+
+# Relative frequency plots for predictive numeric variables 
+for(variable in num_variables){
+  num_plt <- ggplot(df)+ 
+    geom_boxplot(aes_string("No.show", variable, colour = "No.show"))+
+    ggtitle(paste(variable," distribution", sep=" "))+ 
+    ylab(paste(variable, " distribution", sep=""))
+  
+  print(num_plt)
+  ggsave(paste(variable, "_dist2.png", sep=""))
+}
+
+```
+
+
+```{r normalisation}
+
+df_recipe <- df %>% 
+  recipe(No.show ~ ., data=df) %>%
+  step_normalize(all_numeric()) %>% 
+  prep()
+
+df<- juice(df_recipe)
+
+write.csv(df, "no_show_normalised.csv", row.names=FALSE)
+
+```
+
+
+```{r Feature selection using Best Subset for Logistic Regression model, include=FALSE}
+
+library(leaps)
+
+regfit.full = regsubsets(No.show ~ ., data=df, nvmax=11)
+reg.summary = summary(regfit.full)
+names(reg.summary)
+
+which.max (reg.summary$adjr2)
+which.min(reg.summary$cp)
+which.min(reg.summary$bic)
+
+# Plot RSS, Adjusted RSq, Cp, BIC
+png("Variable_gains.png", width = 1500, height = 900)
+par(mfrow=c(2,2))
+plot(reg.summary$rss, xlab="Number of Variables", ylab="RSS", type="l")
+plot(reg.summary$adjr2, xlab="Number of Variables", ylab="Adjusted RSq", type="l")
+points(11, reg.summary$adjr2[11], col="red", cex=3, pch=20)
+plot(reg.summary$cp, xlab="Number of Variables", ylab="Cp", type="l")
+points(7, reg.summary$cp[7], col="red", cex=3, pch =20)
+plot(reg.summary$bic, xlab="Number of Variables", ylab="BIC", type="l")
+points(7, reg.summary$bic[7], col ="red", cex=3, pch =20)
+dev.off()
+
+
+# plot variables that are included for each model and statistics of performance evaluation
+par(mfrow=c(1,1))
+
+png("r2.png", width = 1500, height = 900)
+plot(regfit.full, scale="r2", main="r2")
+dev.off()
+
+png("adjr2.png", width = 1500, height = 900)
+plot(regfit.full, scale="adjr2", main="adjr2")
+dev.off()
+
+png("Cp.png", width = 1500, height = 900)
+plot(regfit.full, scale="Cp", main="Cp")
+dev.off()
+
+png("bic.png", width = 1500, height = 900)
+plot(regfit.full, scale="bic", main="bic")
+dev.off()
+
+
+# The final model will contains the below features
+glm.fit <- glm(No.show ~ Age + Scholarship + SMS_received + daysInAdvance, data=df, family=binomial)
+summary(glm.fit)
+
+```
+
+
+```{r k-fold cross validation and model performance evaluation}
+
+df_no <- df[df$No.show == "No",]
+df_yes <- df[df$No.show == "Yes",]
+
+indexes_no <- as.integer(rownames(df_no[1:nrow(df_no),]))
+indexes_yes <- as.integer(rownames(df_yes[1:nrow(df_yes),]))
+
+# Calculate number of yes and no values for each fold
+num_no <-  as.numeric(floor(table(df$No.show)[1]*0.20))
+num_yes <- as.numeric(floor(table(df$No.show)[2]*0.20))
+total_num_pred <- num_no + num_yes
+
+
+accuracy <- c()
+error <- c()
+sensitivity <- c()
+specificity <- c()
+positivte_pred_values <- c()
+negative_pred_values <- c()
+
+
+set.seed(123)
+
+for(i in 1:5){
+  # Sample row indexes for each class
+  samp_no <- sample(indexes_no, num_no)
+  samp_yes <- sample(indexes_yes, num_yes)
+  
+  # Remove indexes already used
+  indexes_no <- indexes_no[!(indexes_no %in% samp_no)]
+  indexes_yes <- indexes_yes[!(indexes_yes %in% samp_yes)]
+  
+  # Create training and testing sets
+  training <- df[-c(samp_no, samp_yes),]
+  
+  assign(paste("testing", i, sep=""), rbind(df[samp_no,], df[samp_yes,]))
+  
+  # Downsampling dataset
+  training_yes <- training[training$No.show == "Yes",]
+  training_no <- training[training$No.show == "No",]
+  training_no <- training[sample(nrow(training_no), dim(training_yes)[1]),]
+  
+  training <- rbind(training_yes, training_no)
+  
+  
+  # Evaluate model performance
+   glm.fit <- glm(No.show ~ Age + Scholarship + SMS_received + daysInAdvance, data=training, family=binomial)
+  
+  assign(paste("glm.probs", i, sep=""), predict(glm.fit, get(paste("testing", i, sep="")), type="response"))
+  
+  glm.pred <- rep("No", total_num_pred)
+  glm.pred[get(paste("glm.probs", i, sep="")) > 0.5]="Yes"
+
+  
+  conf_matrix <- table(glm.pred , get(paste("testing", i, sep=""))$No.show)
+  
+  accuracy <- append(accuracy, (conf_matrix[1] + conf_matrix[4])/sum(conf_matrix))
+  error <- append(error, (conf_matrix[2] + conf_matrix[3])/sum(conf_matrix))
+  sensitivity <- append(sensitivity, conf_matrix[4]/(conf_matrix[3]+conf_matrix[4]))
+  specificity <- append(specificity, conf_matrix[1]/(conf_matrix[1]+conf_matrix[2]))
+  positivte_pred_values <- append(positivte_pred_values, conf_matrix[4]/(conf_matrix[2]+conf_matrix[4]))
+  negative_pred_values <- append(negative_pred_values, conf_matrix[1]/(conf_matrix[1]+conf_matrix[3]))
+  
+}
+
+statistics_names <- c("accuracy", "error", "sensitivity", "specificity", "positivte_pred_values", "negative_pred_values")
+
+for(name in statistics_names){
+  print(paste("Mean", name, "is", round(mean(get(name)),4), "with sd of", round(sd(get(name)),4)))
+}
+
+```
+
+
+```{r ROC and AUC}
+
+testing_all <- do.call("rbind", list(testing1, testing2, testing3, testing4, testing5))
+glm.probs_all <- c(glm.probs1, glm.probs2, glm.probs3, glm.probs4, glm.probs5)
+
+library(pROC)
+
+png("ROC_AUC.png", width = 1500, height = 900)
+par(pty = "s")
+roc(testing_all$No.show, glm.probs_all, plot=TRUE, legacy.axes=TRUE, print.auc=TRUE)
+dev.off()
+
+```
+
+
